@@ -20,6 +20,7 @@ setup(
     license="LICENCE.txt",
     long_description=open("README.md").read(),
     test_suite="nose.collector",
+    install_requires=['nltk'],
     tests_require=['nose'],
 
     entry_points={
