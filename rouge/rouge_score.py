@@ -32,7 +32,7 @@ from collections import Counter
 from nltk.stem import PorterStemmer
 
 import os
-DEBUG = os.environ.get('DEBUG', 0)
+DEBUG = os.environ.get('DEBUG', '0')
 
 PS = PorterStemmer()
 
@@ -305,7 +305,7 @@ def _union_lcs(evaluated_sentences, reference_sentence, evaluated_left_1grams, r
     for eval_s in evaluated_sentences:
         evaluated_words = _split_into_words([eval_s])
         lcs, lcs_ref_idxes = _recon_lcs_with_mask(reference_words, evaluated_words)
-        if DEBUG:
+        if DEBUG != '0':
             print(lcs)
         for idx in lcs_ref_idxes:
             token = reference_words[idx]
@@ -367,7 +367,7 @@ def rouge_l_summary_level(evaluated_sentences, reference_sentences, alpha=0.5):
                                      reference_left_1grams)
         union_hit_sum += union_hit
 
-    if DEBUG:
+    if DEBUG != '0':
         print(m, n, union_hit_sum)
     llcs = union_hit_sum
     # avoid division by zero
