@@ -26,8 +26,15 @@ https://github.com/miso-belica/sumy/blob/dev/sumy/evaluation/rouge.py.
 """
 from __future__ import absolute_import
 from __future__ import division, print_function, unicode_literals
+import re
 import itertools
+from collections import Counter
+from nltk.stem import PorterStemmer
 
+import os
+DEBUG = os.environ.get('DEBUG', 0)
+
+PS = PorterStemmer()
 
 def _get_ngrams(n, text):
     """Calcualtes n-grams.
@@ -39,17 +46,24 @@ def _get_ngrams(n, text):
     Returns:
       A set of n-grams
     """
-    ngram_set = set()
+    ngram_counter = Counter()
     text_length = len(text)
     max_index_ngram_start = text_length - n
     for i in range(max_index_ngram_start + 1):
-        ngram_set.add(tuple(text[i:i + n]))
-    return ngram_set
+        ngram_counter.update([" ".join(text[i:i + n])])
+    return ngram_counter
+
+
+def _split_sentence(sent):
+    # sent = sent.replace('-', ' - ')
+    tokens =  re.split(r'[!"#$%&\'()*+,./:;<=>?@\[\\\]\-^_`{|}~]|\s+', sent)
+    tokens= [PS.stem(t) for t in tokens if t]
+    return tokens
 
 
 def _split_into_words(sentences):
     """Splits multiple sentences into words and flattens the result"""
-    return list(itertools.chain(*[_.split(" ") for _ in sentences]))
+    return list(itertools.chain(*[_split_sentence(_) for _ in sentences]))
 
 
 def _get_word_ngrams(n, sentences):
@@ -137,6 +151,40 @@ def _recon_lcs(x, y):
     return recon_tuple
 
 
+def _recon_lcs_with_mask(ref, dec):
+    """
+    return the lcs and the reference idxes of the tokens in lcs
+
+    :param ref: sequence of words, a sentence of reference
+    :param dec: sequence of words, a sentence of decoded
+    :return:
+        lcs: the lcs
+        lcs_ref_idxes: 0-1 tuple, length=len(ref), 0 means not hit, 1 means hit by the subsequence
+    """
+    i, j = len(ref), len(dec)
+    table = _lcs(ref, dec)
+
+    def _recon(i, j):
+        """private recon calculation"""
+        if i == 0 or j == 0:
+            return []
+        elif ref[i - 1] == dec[j - 1]:
+            # record the idx of ref
+            return _recon(i - 1, j - 1) + [(ref[i - 1], i-1)]
+        elif table[i - 1, j] > table[i, j - 1]:
+            return _recon(i - 1, j)
+        else:
+            return _recon(i, j - 1)
+
+    subseq = _recon(i, j)
+    if subseq:
+        lcs, lcs_ref_idxes = list(zip(*subseq))
+    else:
+        lcs, lcs_ref_idxes = tuple(), tuple()
+    assert(len(lcs) == len(lcs_ref_idxes))
+    return lcs, lcs_ref_idxes
+
+
 def multi_rouge_n(sequences, scores_ids, n=2):
     """
     Efficient way to compute highly repetitive scoring
@@ -156,7 +204,7 @@ def multi_rouge_n(sequences, scores_ids, n=2):
                   [0, len(sequences)[
     """
     ngrams = [_get_word_ngrams(n, sequence) for sequence in sequences]
-    counts = [len(ngram) for ngram in ngrams]
+    counts = [sum(ngram.values()) for ngram in ngrams]
 
     scores = []
     for hyp_id, ref_id in scores_ids:
@@ -166,8 +214,8 @@ def multi_rouge_n(sequences, scores_ids, n=2):
         reference_ngrams = ngrams[ref_id]
         reference_count = counts[ref_id]
 
-        overlapping_ngrams = evaluated_ngrams.intersection(reference_ngrams)
-        overlapping_count = len(overlapping_ngrams)
+        overlapping_ngrams = evaluated_ngrams & reference_ngrams
+        overlapping_count = sum(overlapping_ngrams.values())
 
         scores += [f_r_p_rouge_n(evaluated_count,
                                  reference_count, overlapping_count)]
@@ -197,12 +245,12 @@ def rouge_n(evaluated_sentences, reference_sentences, n=2):
 
     evaluated_ngrams = _get_word_ngrams(n, evaluated_sentences)
     reference_ngrams = _get_word_ngrams(n, reference_sentences)
-    reference_count = len(reference_ngrams)
-    evaluated_count = len(evaluated_ngrams)
+    reference_count = sum(reference_ngrams.values())
+    evaluated_count = sum(evaluated_ngrams.values())
 
     # Gets the overlapping ngrams between evaluated and reference
-    overlapping_ngrams = evaluated_ngrams.intersection(reference_ngrams)
-    overlapping_count = len(overlapping_ngrams)
+    overlapping_ngrams = evaluated_ngrams & reference_ngrams
+    overlapping_count = sum(overlapping_ngrams.values())
 
     return f_r_p_rouge_n(evaluated_count, reference_count, overlapping_count)
 
@@ -224,7 +272,7 @@ def f_r_p_rouge_n(evaluated_count, reference_count, overlapping_count):
     return {"f": f1_score, "p": precision, "r": recall}
 
 
-def _union_lcs(evaluated_sentences, reference_sentence, prev_union=None):
+def _union_lcs(evaluated_sentences, reference_sentence, evaluated_left_1grams, reference_left_1grams):
     """
     Returns LCS_u(r_i, C) which is the LCS score of the union longest common
     subsequence between reference sentence ri and candidate summary C.
@@ -239,6 +287,8 @@ def _union_lcs(evaluated_sentences, reference_sentence, prev_union=None):
       evaluated_sentences: The sentences that have been picked by the
                            summarizer
       reference_sentence: One of the sentences in the reference summaries
+      evaluated_left_1grams: Left 1grams of evaluated sentences (all the sentences)
+      reference_left_1grams: Left 1grams of reference sentences (all the sentences)
 
     Returns:
       float: LCS_u(r_i, C)
@@ -246,28 +296,28 @@ def _union_lcs(evaluated_sentences, reference_sentence, prev_union=None):
     ValueError:
       Raises exception if a param has len <= 0
     """
-    if prev_union is None:
-        prev_union = set()
-
     if len(evaluated_sentences) <= 0:
         raise ValueError("Collections must contain at least 1 sentence.")
 
-    lcs_union = prev_union
-    prev_count = len(prev_union)
     reference_words = _split_into_words([reference_sentence])
+    hit = 0
 
-    combined_lcs_length = 0
     for eval_s in evaluated_sentences:
         evaluated_words = _split_into_words([eval_s])
-        lcs = set(_recon_lcs(reference_words, evaluated_words))
-        combined_lcs_length += len(lcs)
-        lcs_union = lcs_union.union(lcs)
+        lcs, lcs_ref_idxes = _recon_lcs_with_mask(reference_words, evaluated_words)
+        if DEBUG:
+            print(lcs)
+        for idx in lcs_ref_idxes:
+            token = reference_words[idx]
+            if evaluated_left_1grams[token] > 0 and reference_left_1grams[token] > 0:
+                hit += 1
+                evaluated_left_1grams[token] -= 1
+                reference_left_1grams[token] -= 1
 
-    new_lcs_count = len(lcs_union) - prev_count
-    return new_lcs_count, lcs_union
+    return hit
 
 
-def rouge_l_summary_level(evaluated_sentences, reference_sentences):
+def rouge_l_summary_level(evaluated_sentences, reference_sentences, alpha=0.5):
     """
     Computes ROUGE-L (summary level) of two text collections of sentences.
     http://research.microsoft.com/en-us/um/people/cyl/download/papers/
@@ -300,25 +350,39 @@ def rouge_l_summary_level(evaluated_sentences, reference_sentences):
         raise ValueError("Collections must contain at least 1 sentence.")
 
     # total number of words in reference sentences
-    m = len(set(_split_into_words(reference_sentences)))
+    reference_tokens = _split_into_words(reference_sentences)
+    m = len(reference_tokens)
+    reference_left_1grams = _get_ngrams(1, reference_tokens)
 
     # total number of words in evaluated sentences
-    n = len(set(_split_into_words(evaluated_sentences)))
+    evaluated_tokens = _split_into_words(evaluated_sentences)
+    n = len(evaluated_tokens)
+    evaluated_left_1grams = _get_ngrams(1, evaluated_tokens)
 
     # print("m,n %d %d" % (m, n))
-    union_lcs_sum_across_all_references = 0
-    union = set()
+    union_hit_sum = 0
     for ref_s in reference_sentences:
-        lcs_count, union = _union_lcs(evaluated_sentences,
-                                      ref_s,
-                                      prev_union=union)
-        union_lcs_sum_across_all_references += lcs_count
+        # the 1grams will be updated in the function
+        union_hit = _union_lcs(evaluated_sentences, ref_s, evaluated_left_1grams,
+                                     reference_left_1grams)
+        union_hit_sum += union_hit
 
-    llcs = union_lcs_sum_across_all_references
-    r_lcs = llcs / m
-    p_lcs = llcs / n
-    beta = p_lcs / (r_lcs + 1e-12)
-    num = (1 + (beta**2)) * r_lcs * p_lcs
-    denom = r_lcs + ((beta**2) * p_lcs)
-    f_lcs = num / (denom + 1e-12)
+    if DEBUG:
+        print(m, n, union_hit_sum)
+    llcs = union_hit_sum
+    # avoid division by zero
+    r_lcs = llcs / (m + 1e-12)
+    p_lcs = llcs / (n + 1e-12)
+    if alpha == None:
+        beta = p_lcs / (r_lcs + 1e-12)
+        num = (1 + (beta**2)) * r_lcs * p_lcs
+        denom = r_lcs + ((beta**2) * p_lcs)
+        f_lcs = num / (denom + 1e-12)
+    else:
+        num = p_lcs * r_lcs
+        denom = (1 - alpha) * p_lcs + alpha * r_lcs
+        if denom == 0:
+            f_lcs = 0.0
+        else:
+            f_lcs = num / denom
     return {"f": f_lcs, "p": p_lcs, "r": r_lcs}

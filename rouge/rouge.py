@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import
 import six
-import rouge.rouge_score as rouge_score
 import io
 import os
+from . import rouge_score
 
 
 class FilesRouge:
@@ -101,8 +101,8 @@ class Rouge:
         scores = []
         for hyp, ref in zip(hyps, refs):
             sen_score = {}
-            hyp = [" ".join(_.split()) for _ in hyp.split(".") if len(_) > 0]
-            ref = [" ".join(_.split()) for _ in ref.split(".") if len(_) > 0]
+            hyp = [" ".join(_.split()) for _ in hyp.split('\n') if len(_) > 0]
+            ref = [" ".join(_.split()) for _ in ref.split("\n") if len(_) > 0]
 
             for m in self.metrics:
                 fn = Rouge.AVAILABLE_METRICS[m]
@@ -116,8 +116,8 @@ class Rouge:
 
         count = 0
         for (hyp, ref) in zip(hyps, refs):
-            hyp = [" ".join(_.split()) for _ in hyp.split(".") if len(_) > 0]
-            ref = [" ".join(_.split()) for _ in ref.split(".") if len(_) > 0]
+            hyp = [" ".join(_.split()) for _ in hyp.split("\n") if len(_) > 0]
+            ref = [" ".join(_.split()) for _ in ref.split("\n") if len(_) > 0]
 
             for m in self.metrics:
                 fn = Rouge.AVAILABLE_METRICS[m]
